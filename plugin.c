@@ -253,6 +253,8 @@ void synth_process_audio (synth_t *synth,
 
     for (i = 0; i < n_frames; i++) {
 
+        size_t j;
+
         /* TODO
          * learn abt coupling between transverse planes n longitudinal 
          * due to the bridge ?????? */
@@ -260,13 +262,13 @@ void synth_process_audio (synth_t *synth,
         double output_resonator;
 
         double output_sum_voices = 0;
-        for (i = 0; i < N_VOICES; i++)
-            output_sum_voices += synth->voices[i].output;
+        for (j = 0; j < N_VOICES; j++)
+            output_sum_voices += synth->voices[j].output;
 
         output_resonator = resonator_process (&synth->resonator, output_sum_voices);
 
-        for (i = 0; i < N_VOICES; i++)
-            voice_process (&synth->voices[i], SYMPATHETIC_RESONANCE * output_resonator);
+        for (j = 0; j < N_VOICES; j++)
+            voice_process (&synth->voices[j], SYMPATHETIC_RESONANCE * output_resonator);
 
         buffer[i] = output_resonator;
     }
