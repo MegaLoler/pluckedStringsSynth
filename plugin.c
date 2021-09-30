@@ -14,7 +14,7 @@
 #define N_VOICES 128
 #define SYMPATHETIC_RESONANCE 0.05
 #define BEND_RANGE 2 /* semitones */
-#define N_DELAY_SAMPLES 2400
+#define N_DELAY_SAMPLES 8000
 #define CUTOFF_LOOP_UNDAMPED 8000
 #define CUTOFF_LOOP_DAMPED 500
 #define CUTOFF_DC_BLOCKER 20
@@ -112,12 +112,10 @@ typedef struct voice_t {
 void voice_init (voice_t *voice, int note) {
 
     memset (voice, 0, sizeof (voice_t));
-    voice->frequency = 8;/*440 * pow (2, (note - 69) / 12.0);*/
-    /*
+    voice->frequency = 440 * pow (2, (note - 69) / 12.0);
     delay_init (&voice->delay, N_DELAY_SAMPLES);
     filter_init (&voice->filter_loop);
     filter_init (&voice->filter_dc_blocker);
-    */
 }
 
 void voice_terminate (voice_t *voice) {
@@ -403,40 +401,40 @@ void jack_shutdown (void *arg) {
 
 int main (int argc, char **argv) {
 
-    jack_context_t context;
-    memset (&context, 0, sizeof (context));
+    jack_context_t *context = malloc (sizeof (jack_context_t));
+    memset (context, 0, sizeof (jack_context_t));
 
     puts ("hewwo dewe!!😊");
 
-    if (!(context.client = jack_client_open ("synth", JackNullOption, NULL))) {
+    if (!(context->client = jack_client_open ("synth", JackNullOption, NULL))) {
 
         fputs ("waaaaaa waaaaaaaa i couldnt connect to jack server 😢", stderr);
         return EXIT_FAILURE;
     }
 
-    synth_init (&context.synth);
+    synth_init (&context->synth);
 
-    jack_set_process_callback     (context.client, jack_process,  &context);
-    jack_set_sample_rate_callback (context.client, jack_set_rate, &context);
-    jack_on_shutdown              (context.client, jack_shutdown, &context);
+    jack_set_process_callback     (context->client, jack_process,  context);
+    jack_set_sample_rate_callback (context->client, jack_set_rate, context);
+    jack_on_shutdown              (context->client, jack_shutdown, context);
 
-    context.port_midi_in = jack_port_register (context.client, "midi_in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
-    context.port_audio_out = jack_port_register (context.client, "audio_out", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+    context->port_midi_in = jack_port_register (context->client, "midi_in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
+    context->port_audio_out = jack_port_register (context->client, "audio_out", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
 
-    if (jack_activate (context.client)) {
+    if (jack_activate (context->client)) {
 
         fputs ("*breaths heavily n upsettily* cant activate jack cwient ? ? 😭", stderr);
         return EXIT_FAILURE;
     }
 
-    jack_connect (context.client, "synth:audio_out", "system:playback_1");
-    jack_connect (context.client, "synth:audio_out", "system:playback_2");
+    jack_connect (context->client, "synth:audio_out", "system:playback_1");
+    jack_connect (context->client, "synth:audio_out", "system:playback_2");
 
     pause ();
 
-    synth_terminate (&context.synth);
+    synth_terminate (&context->synth);
 
-    jack_client_close (context.client);
+    jack_client_close (context->client);
 
     return EXIT_SUCCESS;
 }
