@@ -5,7 +5,7 @@ LDFLAGS     := $(shell pkg-config --libs $(LIBS)) -lm
 TARGET      := plugin
 PATH_BUILD  := build
 PATH_TARGET := "$(PATH_BUILD)/$(TARGET)"
-SOURCES     := plugin.c
+SOURCES     := $(wildcard *.c)
 
 $(PATH_TARGET): $(PATH_BUILD) $(SOURCES)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SOURCES)
