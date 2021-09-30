@@ -20,11 +20,6 @@
 #define CUTOFF_DC_BLOCKER 20
 #define HAMMER_STRIKE_POSITION 0.2
 
-static double note_frequency (double note) {
-
-    return 440 * pow (2, (note - 69) / 12.0);
-}
-
 typedef struct filter_t {
 
     double state;
@@ -117,10 +112,12 @@ typedef struct voice_t {
 void voice_init (voice_t *voice, int note) {
 
     memset (voice, 0, sizeof (voice_t));
-    voice->frequency = note_frequency (note);
+    voice->frequency = 8;/*440 * pow (2, (note - 69) / 12.0);*/
+    /*
     delay_init (&voice->delay, N_DELAY_SAMPLES);
     filter_init (&voice->filter_loop);
     filter_init (&voice->filter_dc_blocker);
+    */
 }
 
 void voice_terminate (voice_t *voice) {
