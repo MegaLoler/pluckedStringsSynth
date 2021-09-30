@@ -57,40 +57,13 @@ double filter_process_high_pass (filter_t *filter, double input) {
     return input - filter_process (filter, input);
 }
 
-typedef struct buffer_t {
-
-    size_t n_samples;
-    double *buffer;
-    size_t position;
-
-} buffer_t;
-
-void buffer_init (buffer_t *buffer, size_t n_samples) {
-
-    memset (buffer, 0, sizeof (buffer_t));
-    buffer->buffer = calloc (n_samples, sizeof (double));
-}
-
-void buffer_terminate (buffer_t *buffer) {
-
-    free (buffer->buffer);
-}
-
-void buffer_period_set (buffer_t *buffer, double frequency, double rate) {
-
-    buffer->n_samples = rate / frequency;
-}
-
-double buffer_process (buffer_t *buffer) {
-
-    return buffer->position < buffer->n_samples ? buffer->buffer[buffer->position++] : 0;
-}
-
 typedef struct delay_t {
 
     double *buffer_head;
     double *buffer_tail;
     double *buffer_pointer;
+
+    size_t n_samples;
 
 } delay_t;
 
@@ -99,6 +72,7 @@ void delay_init (delay_t *delay, size_t n_samples) {
     delay->buffer_head = calloc (n_samples, sizeof (double));
     delay->buffer_tail = delay->buffer_head + n_samples;
     delay->buffer_pointer = delay->buffer_head;
+    delay->n_samples = n_samples;
 }
 
 void delay_terminate (delay_t *delay) {
@@ -112,6 +86,7 @@ void delay_length_set (delay_t *delay, size_t n_samples) {
     delay->buffer_tail = delay->buffer_head + n_samples;
     if (delay->buffer_tail > buffer_tail_old)
         memset (buffer_tail_old, 0, sizeof (double) * (delay->buffer_tail - buffer_tail_old));
+    delay->n_samples = n_samples;
 }
 
 void delay_period_set (delay_t *delay, double frequency, double rate) {
@@ -129,7 +104,6 @@ void delay_process (delay_t *delay, double input) {
 typedef struct voice_t {
 
     delay_t delay;
-    buffer_t buffer;
     filter_t filter_loop;
     filter_t filter_dc_blocker;
     double frequency;
@@ -145,7 +119,6 @@ void voice_init (voice_t *voice, int note) {
     memset (voice, 0, sizeof (voice_t));
     voice->frequency = note_frequency (note);
     delay_init (&voice->delay, N_DELAY_SAMPLES);
-    buffer_init (&voice->buffer, N_DELAY_SAMPLES);
     filter_init (&voice->filter_loop);
     filter_init (&voice->filter_dc_blocker);
 }
@@ -155,32 +128,13 @@ void voice_terminate (voice_t *voice) {
     delay_terminate (&voice->delay);
 }
 
-static void voice_prepare_excitation (voice_t *voice) {
-
-    size_t i;
-    for (i = 0; i < voice->buffer.n_samples / 2; i++) {
-
-        double position = i / (double) voice->buffer.n_samples * 2;
-        double sample;
-        if (position < HAMMER_STRIKE_POSITION)
-            sample = position / HAMMER_STRIKE_POSITION;
-        else
-            sample = 1 - (position - HAMMER_STRIKE_POSITION) / (1 - HAMMER_STRIKE_POSITION);
-        voice->buffer.buffer[i] = sample / 2;
-        voice->buffer.buffer[voice->buffer.n_samples - i - 1] = -voice->buffer.buffer[i];
-    }
-}
-
 void voice_update (voice_t *voice) {
 
     double cutoff_loop = voice->playing ? CUTOFF_LOOP_UNDAMPED : CUTOFF_LOOP_DAMPED;
 
     delay_period_set (&voice->delay, voice->frequency, voice->rate);
-    buffer_period_set (&voice->buffer, voice->frequency, voice->rate);
     filter_cutoff_set (&voice->filter_loop, cutoff_loop, voice->rate);
     filter_cutoff_set (&voice->filter_dc_blocker, CUTOFF_DC_BLOCKER, voice->rate);
-
-    voice_prepare_excitation (voice);
 }
 
 void voice_rate_set (voice_t *voice, double rate) {
@@ -192,18 +146,40 @@ void voice_rate_set (voice_t *voice, double rate) {
 void voice_process (voice_t *voice, double input) {
 
     double output = *voice->delay.buffer_pointer;
-    double excitation = buffer_process (&voice->buffer);
     double filter_loop = filter_process (&voice->filter_loop, output);
     double filter_dc_blocker = filter_process_high_pass (&voice->filter_dc_blocker, filter_loop);
-    delay_process (&voice->delay, input + excitation + filter_dc_blocker);
+    delay_process (&voice->delay, input + filter_dc_blocker);
     voice->output = output;
+}
+
+static void voice_excite (voice_t *voice) {
+
+    size_t i;
+    for (i = 0; i < voice->delay.n_samples; i++) {
+
+        double position = i / (double) voice->delay.n_samples * 2;
+        double sample = 1;
+
+        if (position > 1) {
+
+            position = 2 - position;
+            sample = -1;
+        }
+
+        if (position < HAMMER_STRIKE_POSITION)
+            sample *= position / HAMMER_STRIKE_POSITION;
+        else
+            sample *= 1 - (position - HAMMER_STRIKE_POSITION) / (1 - HAMMER_STRIKE_POSITION);
+
+        voice->delay.buffer_head[i] = sample / 2;
+    }
 }
 
 void voice_note_on (voice_t *voice, double velocity) {
 
     voice->playing = true;
     filter_cutoff_set (&voice->filter_loop, CUTOFF_LOOP_UNDAMPED, voice->rate);
-    voice->buffer.position = 0;
+    voice_excite (voice);
 }
 
 void voice_note_off (voice_t *voice, double velocity) {
