@@ -1,6 +1,6 @@
 LIBS        := jack
 CC          := cc
-CFLAGS      := -Wall -Wpedantic -ansi -g -Og $(shell pkg-config --cflags $(LIBS))
+CFLAGS      := -Wall -Wpedantic -ansi -g $(shell pkg-config --cflags $(LIBS))
 LDFLAGS     := $(shell pkg-config --libs $(LIBS)) -lm
 TARGET      := plugin
 PATH_BUILD  := build
