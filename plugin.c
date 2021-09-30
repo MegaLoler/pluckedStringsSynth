@@ -11,19 +11,65 @@
 #include <jack/jack.h>
 #include <jack/midiport.h>
 
-#define N_VOICES 100
-#define SYMPATHETIC_RESONANCE 0.1
+#define PATH_IMPULSE_RESPONSE "ir2.pcm"
+
+#define N_VOICES 127
+#define VOICE_MIN 0x24
+#define VOICE_MAX 0x61
+#define SYMPATHETIC_RESONANCE 0.5
 #define BEND_RANGE 2 /* semitones */
 #define N_DELAY_SAMPLES 8000
 #define CUTOFF_LOOP_UNDAMPED 8000
-#define CUTOFF_LOOP_DAMPED 400
+#define CUTOFF_LOOP_DAMPED 500
 #define CUTOFF_DC_BLOCKER 20
-#define HAMMER_STRIKE_POSITION 0.15
-#define VOLUME 0.2
+#define HAMMER_STRIKE_POSITION 0.25
+#define VOLUME 0.5
 
 static double lerp (double x, double a, double b) {
 
     return a + x * (b - a);
+}
+
+typedef struct buffer_t {
+
+    size_t n_samples;
+    double *data;
+
+} buffer_t;
+
+void buffer_init (buffer_t *buffer, size_t n_samples, double *data) {
+
+    buffer->n_samples = n_samples;
+    buffer->data = data;
+}
+
+void buffer_load (buffer_t *buffer, char *path) {
+
+    FILE *stream;
+    size_t n_samples;
+    double *data;
+
+    if (!(stream = fopen (path, "rb"))) {
+
+        fprintf (stderr, "cldnt open da file %s... 😭\n", path);
+        exit (EXIT_FAILURE);
+    }
+
+    fseek (stream, 0, SEEK_END);
+    n_samples = ftell (stream) / sizeof (double);
+    rewind (stream);
+
+    data = calloc (n_samples, sizeof (double));
+    fread (data, sizeof (double), n_samples, stream);
+
+    fclose (stream);
+
+    buffer_init (buffer, n_samples, data);
+}
+
+void buffer_terminate (buffer_t *buffer) {
+
+    free (buffer->data);
 }
 
 typedef struct filter_t {
@@ -102,6 +148,58 @@ void delay_process (delay_t *delay, double input) {
         delay->buffer_pointer -= delay->buffer_tail - delay->buffer_head;
 }
 
+typedef struct convolver_t {
+
+    size_t i_sample;
+    buffer_t impulse_response;
+    delay_t memory;
+    double volume;
+
+} convolver_t;
+
+void convolver_init (convolver_t *convolver, char *path_impulse_response) {
+
+    size_t i;
+
+    memset (convolver, 0, sizeof (convolver_t));
+    buffer_load (&convolver->impulse_response, path_impulse_response);
+    delay_init (&convolver->memory, convolver->impulse_response.n_samples);
+
+    /* calculate normalized volume */
+    /* TODO figure this out lol */
+    for (i = 0; i < convolver->impulse_response.n_samples; i++)
+        convolver->volume += convolver->impulse_response.data[i];
+    convolver->volume = 1; /* TODO */
+}
+
+void convolver_terminate (convolver_t *convolver) {
+
+    buffer_terminate (&convolver->impulse_response);
+    delay_terminate (&convolver->memory);
+}
+
+double convolver_process (convolver_t *convolver, double input) {
+
+    size_t i;
+    double output = 0;
+
+    delay_process (&convolver->memory, input);
+
+    for (i = 0; i < convolver->impulse_response.n_samples; i++) {
+
+        int i_sample = convolver->i_sample - i;
+        while (i_sample < 0) {
+            i_sample += convolver->impulse_response.n_samples;
+        }
+        output += convolver->impulse_response.data[i]
+                * convolver->memory.buffer_head[i_sample];
+    }
+
+    convolver->i_sample = (convolver->i_sample + 1) % convolver->memory.n_samples;
+
+    return convolver->volume * output;
+}
+
 typedef struct voice_t {
 
     delay_t delay;
@@ -148,11 +246,13 @@ void voice_rate_set (voice_t *voice, double rate) {
 
 void voice_process (voice_t *voice, double input) {
 
-    double output = *voice->delay.buffer_pointer;
-    double filter_loop = filter_process (&voice->filter_loop, output);
+    double delay = *voice->delay.buffer_pointer;
+    double filter_loop = filter_process (&voice->filter_loop, delay);
     double filter_dc_blocker = filter_process_high_pass (&voice->filter_dc_blocker, filter_loop);
-    delay_process (&voice->delay, input + filter_dc_blocker);
-    voice->output = output;
+    double feedback = filter_loop;/*_dc_blocker;*/
+    voice->output = delay - feedback;
+    /*delay_process (&voice->delay, input + feedback);*/
+    delay_process (&voice->delay, 0 + feedback);
 }
 
 static void voice_excite (voice_t *voice, double velocity) {
@@ -199,22 +299,24 @@ void voice_damper_set (voice_t *voice, double damper) {
 
 typedef struct resonator_t {
 
-    int dummy;
+    convolver_t convolver;
 
 } resonator_t;
 
 void resonator_init (resonator_t *resonator) {
 
     memset (resonator, 0, sizeof (resonator_t));
+    convolver_init (&resonator->convolver, PATH_IMPULSE_RESPONSE);
 }
 
 void resonator_terminate (resonator_t *resonator) {
 
+    convolver_terminate (&resonator->convolver);
 }
 
 double resonator_process (resonator_t *resonator, double input) {
 
-    return input;
+    return convolver_process (&resonator->convolver, input);
 }
 
 typedef struct synth_t {
@@ -274,17 +376,21 @@ void synth_process_audio (synth_t *synth,
          * due to the bridge ?????? */
 
         double output_resonator;
+        double sympathetic_resonance;
+        double output;
 
         double output_sum_voices = 0;
-        for (j = 0; j < N_VOICES; j++)
+        for (j = VOICE_MIN; j < VOICE_MAX; j++)
             output_sum_voices += synth->voices[j].output;
 
-        output_resonator = resonator_process (&synth->resonator, output_sum_voices);
+        output_resonator = output_sum_voices;/*resonator_process (&synth->resonator, output_sum_voices);*/
+        sympathetic_resonance = SYMPATHETIC_RESONANCE * output_resonator / N_VOICES;
+        output = output_resonator - sympathetic_resonance;
 
-        for (j = 0; j < N_VOICES; j++)
-            voice_process (&synth->voices[j], SYMPATHETIC_RESONANCE * output_resonator / N_VOICES);
+        for (j = VOICE_MIN; j < VOICE_MAX; j++)
+            voice_process (&synth->voices[j], sympathetic_resonance);
 
-        buffer[i] = VOLUME * output_resonator;
+        buffer[i] = VOLUME * output;
     }
 }
 
