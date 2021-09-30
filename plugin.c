@@ -11,14 +11,20 @@
 #include <jack/jack.h>
 #include <jack/midiport.h>
 
-#define N_VOICES 128
-#define SYMPATHETIC_RESONANCE 0.05
+#define N_VOICES 100
+#define SYMPATHETIC_RESONANCE 0.1
 #define BEND_RANGE 2 /* semitones */
 #define N_DELAY_SAMPLES 8000
 #define CUTOFF_LOOP_UNDAMPED 8000
-#define CUTOFF_LOOP_DAMPED 500
+#define CUTOFF_LOOP_DAMPED 400
 #define CUTOFF_DC_BLOCKER 20
-#define HAMMER_STRIKE_POSITION 0.2
+#define HAMMER_STRIKE_POSITION 0.15
+#define VOLUME 0.2
+
+static double lerp (double x, double a, double b) {
+
+    return a + x * (b - a);
+}
 
 typedef struct filter_t {
 
@@ -104,6 +110,7 @@ typedef struct voice_t {
     double frequency;
     double output;
     bool playing;
+    double cutoff_damper;
 
     double rate;
 
@@ -116,6 +123,7 @@ void voice_init (voice_t *voice, int note) {
     delay_init (&voice->delay, N_DELAY_SAMPLES);
     filter_init (&voice->filter_loop);
     filter_init (&voice->filter_dc_blocker);
+    voice->cutoff_damper = CUTOFF_LOOP_DAMPED;
 }
 
 void voice_terminate (voice_t *voice) {
@@ -125,7 +133,7 @@ void voice_terminate (voice_t *voice) {
 
 void voice_update (voice_t *voice) {
 
-    double cutoff_loop = voice->playing ? CUTOFF_LOOP_UNDAMPED : CUTOFF_LOOP_DAMPED;
+    double cutoff_loop = voice->playing ? CUTOFF_LOOP_UNDAMPED : voice->cutoff_damper;
 
     delay_period_set (&voice->delay, voice->frequency, voice->rate);
     filter_cutoff_set (&voice->filter_loop, cutoff_loop, voice->rate);
@@ -147,18 +155,18 @@ void voice_process (voice_t *voice, double input) {
     voice->output = output;
 }
 
-static void voice_excite (voice_t *voice) {
+static void voice_excite (voice_t *voice, double velocity) {
 
     size_t i;
     for (i = 0; i < voice->delay.n_samples; i++) {
 
         double position = i / (double) voice->delay.n_samples * 2;
-        double sample = 1;
+        double sample = velocity;
 
         if (position > 1) {
 
             position = 2 - position;
-            sample = -1;
+            sample = -velocity;
         }
 
         if (position < HAMMER_STRIKE_POSITION)
@@ -166,7 +174,7 @@ static void voice_excite (voice_t *voice) {
         else
             sample *= 1 - (position - HAMMER_STRIKE_POSITION) / (1 - HAMMER_STRIKE_POSITION);
 
-        voice->delay.buffer_head[i] = sample / 2;
+        delay_process (&voice->delay, *voice->delay.buffer_pointer + sample / 2);
     }
 }
 
@@ -174,13 +182,19 @@ void voice_note_on (voice_t *voice, double velocity) {
 
     voice->playing = true;
     filter_cutoff_set (&voice->filter_loop, CUTOFF_LOOP_UNDAMPED, voice->rate);
-    voice_excite (voice);
+    voice_excite (voice, velocity / 127.0);
 }
 
 void voice_note_off (voice_t *voice, double velocity) {
 
     voice->playing = false;
-    filter_cutoff_set (&voice->filter_loop, CUTOFF_LOOP_DAMPED, voice->rate);
+    filter_cutoff_set (&voice->filter_loop, voice->cutoff_damper, voice->rate);
+}
+
+void voice_damper_set (voice_t *voice, double damper) {
+
+    voice->cutoff_damper = lerp (damper, CUTOFF_LOOP_UNDAMPED, CUTOFF_LOOP_DAMPED);
+    voice_update (voice);
 }
 
 typedef struct resonator_t {
@@ -268,9 +282,9 @@ void synth_process_audio (synth_t *synth,
         output_resonator = resonator_process (&synth->resonator, output_sum_voices);
 
         for (j = 0; j < N_VOICES; j++)
-            voice_process (&synth->voices[j], SYMPATHETIC_RESONANCE * output_resonator);
+            voice_process (&synth->voices[j], SYMPATHETIC_RESONANCE * output_resonator / N_VOICES);
 
-        buffer[i] = output_resonator;
+        buffer[i] = VOLUME * output_resonator;
     }
 }
 
@@ -286,12 +300,19 @@ void synth_process_midi_note_on (synth_t *synth, int channel, int note, int velo
 
 void synth_process_midi_cc (synth_t *synth, int channel, int controller, int value) {
 
+    size_t i;
+
     switch (controller) {
 
         case 1: /* modulation wheel */
             break;
 
         case 11: /* expression */
+            break;
+
+        case 64: /* sustain pedal */
+            for (i = 0; i < N_VOICES; i++)
+                voice_damper_set (&synth->voices[i], value / 127.0);
             break;
     }
 }
@@ -310,10 +331,12 @@ void synth_process_midi (synth_t *synth, jack_midi_data_t *data) {
     switch (status) {
 
         case 0x80: /* note off */
+            printf ("note off: %x %x\n", data[1], data[2]);
             synth_process_midi_note_off (synth, channel, data[1], data[2]);
             break;
 
         case 0x90: /* note on */
+            printf ("note on: %x %x\n", data[1], data[2]);
             synth_process_midi_note_on (synth, channel, data[1], data[2]);
             break;
 
@@ -321,6 +344,7 @@ void synth_process_midi (synth_t *synth, jack_midi_data_t *data) {
             break;
 
         case 0xb0: /* control change */
+            printf ("control change: %x %x\n", data[1], data[2]);
             synth_process_midi_cc (synth, channel, data[1], data[2]);
             break;
 
@@ -331,6 +355,7 @@ void synth_process_midi (synth_t *synth, jack_midi_data_t *data) {
             break;
 
         case 0xe0: /* pitch bend */
+            printf ("pitch bend: %x %x\n", data[1], data[2]);
             synth_process_midi_bend (synth, channel, data[1], data[2]);
             break;
     }
