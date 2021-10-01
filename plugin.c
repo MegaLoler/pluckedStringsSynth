@@ -12,20 +12,20 @@
 #include <jack/jack.h>
 #include <jack/midiport.h>
 
-#define PATH_IMPULSE_RESPONSE "guitar.pcm"
+#define PATH_IMPULSE_RESPONSE /*"guitar2.pcm"*/ /*"harp.pcm"*/ "bass.pcm"
 
 #define N_VOICES 128
-#define VOICE_MIN 36
-#define VOICE_MAX 97
-#define SYMPATHETIC_RESONANCE 5
+#define VOICE_MIN 36-12
+#define VOICE_MAX 97-12
+#define SYMPATHETIC_RESONANCE /*5*/ /*5*/ 1
 #define BEND_RANGE 2 /* semitones */
 #define N_DELAY_SAMPLES 8000
 #define BRIDGE_COEFFICIENT_BYPASS_MIN 0.00/*0.00*/
 #define BRIDGE_COEFFICIENT_BYPASS_MAX 0.00/*0.00*/
 #define RESONANCE_BODY 1
 #define CUTOFF_DC_BLOCKER 20
-#define CUTOFF_BRIDGE_MIN 4000 /*500*/
-#define CUTOFF_BRIDGE_MAX 48000 /*24000*/
+#define CUTOFF_BRIDGE_MIN /*4000*/ /*500*/ 1000
+#define CUTOFF_BRIDGE_MAX /*48000*/ /*24000*/ 12000
 #define CUTOFF_DAMPER 600
 #define CUTOFF_FINGER 500
 #define COEFFICIENT_TRANSITION_FINGER_INTERPOLATION_EXPONENT 15
@@ -33,9 +33,9 @@
 #define COEFFICIENT_TRANSITION_FINGER_MIN 10
 #define COEFFICIENT_TRANSITION_FINGER_NOTE_OFF 20
 #define COEFFICIENT_TRANSITION_DAMPER 10
-#define HAMMER_STRIKE_POSITION_CENTER 0.15 /*0.5*/
+#define HAMMER_STRIKE_POSITION_CENTER 0.15 /*0.5*/ /*0.15*/
 #define HAMMER_STRIKE_POSITION_VARIATION 0.05 /* plus or minus */
-#define VOLUME 5 /*1*/
+#define VOLUME /*2*/ /*1*/ 0.5
 
 static double noise () {
 
