@@ -12,7 +12,7 @@
 #include <jack/jack.h>
 #include <jack/midiport.h>
 
-#define PATH_IMPULSE_RESPONSE /*"guitar2.pcm"*/ /*"harp.pcm"*/ "bass.pcm"
+#define PATH_IMPULSE_RESPONSE /*"guitar2.pcm"*/ /*"harp.pcm"*/ "guitar2.pcm"
 
 #define N_VOICES 128
 #define VOICE_MIN 36-12
@@ -24,8 +24,8 @@
 #define BRIDGE_COEFFICIENT_BYPASS_MAX 0.00/*0.00*/
 #define RESONANCE_BODY 1
 #define CUTOFF_DC_BLOCKER 20
-#define CUTOFF_BRIDGE_MIN /*4000*/ /*500*/ 1000
-#define CUTOFF_BRIDGE_MAX /*48000*/ /*24000*/ 12000
+#define CUTOFF_BRIDGE_MIN /*4000*/ /*500*/ 500
+#define CUTOFF_BRIDGE_MAX /*48000*/ /*24000*/ 24000
 #define CUTOFF_DAMPER 600
 #define CUTOFF_FINGER 500
 #define COEFFICIENT_TRANSITION_FINGER_INTERPOLATION_EXPONENT 15
