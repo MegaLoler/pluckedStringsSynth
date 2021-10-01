@@ -14,17 +14,17 @@
 
 #define PATH_IMPULSE_RESPONSE "ir2.pcm"
 
-#define N_VOICES 97
+#define N_VOICES 128
 #define VOICE_MIN 36
 #define VOICE_MAX 97
-#define SYMPATHETIC_RESONANCE 0.8
+#define SYMPATHETIC_RESONANCE 5
 #define BEND_RANGE 2 /* semitones */
 #define N_DELAY_SAMPLES 8000
-#define TRANSMISSION_BRIDGE 0.001
+#define BRIDGE_COEFFICIENT_BYPASS 0.0025
 #define RESONANCE_BODY 1
 #define CUTOFF_DC_BLOCKER 20
-#define CUTOFF_BRIDGE 36000
-#define CUTOFF_DAMPER 4000
+#define CUTOFF_BRIDGE 24000
+#define CUTOFF_DAMPER 2000
 #define CUTOFF_FINGER 500
 #define COEFFICIENT_TRANSITION_FINGER_INTERPOLATION_EXPONENT 15
 #define COEFFICIENT_TRANSITION_FINGER_MAX 100000
@@ -33,7 +33,7 @@
 #define COEFFICIENT_TRANSITION_DAMPER 10
 #define HAMMER_STRIKE_POSITION_CENTER 0.15
 #define HAMMER_STRIKE_POSITION_VARIATION 0.05 /* plus or minus */
-#define VOLUME 20
+#define VOLUME 25
 
 static double noise () {
 
@@ -211,16 +211,44 @@ double convolver_process (convolver_t *convolver, double input) {
     return output;
 }
 
+typedef struct bridge_t {
+
+    filter_t filter;
+    double coefficient_bypass;
+
+} bridge_t;
+
+void bridge_init (bridge_t *bridge, double coefficient_bypass) {
+
+    filter_init (&bridge->filter);
+    bridge->coefficient_bypass = coefficient_bypass;
+}
+
+void bridge_terminate (bridge_t *bridge) {
+
+    filter_terminate (&bridge->filter);
+}
+
+void bridge_cutoff_set (bridge_t *bridge, double cutoff, double rate) {
+
+    filter_cutoff_set (&bridge->filter, cutoff, rate);
+}
+
+double bridge_process (bridge_t *bridge, double input) {
+
+    double bypass = bridge->coefficient_bypass * input;
+    return filter_process (&bridge->filter, input - bypass);
+}
+
 typedef struct voice_t {
 
     delay_t delay;
     filter_t filter_dc_blocker;
-    filter_t filter_bridge_loop;
-    filter_t filter_bridge_input;
     filter_t filter_damper;
     filter_t filter_finger;
     filter_t filter_transition_damper;
     filter_t filter_transition_finger;
+    bridge_t bridge;
     double frequency;
     double output;
     double target_coefficient_damper;
@@ -238,12 +266,11 @@ void voice_init (voice_t *voice, int note) {
     voice->frequency = 440 * pow (2, (note - 69) / 12.0);
     delay_init (&voice->delay, N_DELAY_SAMPLES);
     filter_init (&voice->filter_dc_blocker);
-    filter_init (&voice->filter_bridge_loop);
-    filter_init (&voice->filter_bridge_input);
     filter_init (&voice->filter_damper);
     filter_init (&voice->filter_finger);
     filter_init (&voice->filter_transition_damper);
     filter_init (&voice->filter_transition_finger);
+    bridge_init (&voice->bridge, BRIDGE_COEFFICIENT_BYPASS);
     voice->target_coefficient_damper = 0;
     voice->target_coefficient_finger = 0;
     voice->coefficient_transition_finger = COEFFICIENT_TRANSITION_FINGER_MAX;
@@ -254,24 +281,22 @@ void voice_terminate (voice_t *voice) {
 
     delay_terminate (&voice->delay);
     filter_terminate (&voice->filter_dc_blocker);
-    filter_terminate (&voice->filter_bridge_loop);
-    filter_terminate (&voice->filter_bridge_input);
     filter_terminate (&voice->filter_damper);
     filter_terminate (&voice->filter_finger);
     filter_terminate (&voice->filter_transition_damper);
     filter_terminate (&voice->filter_transition_finger);
+    bridge_terminate (&voice->bridge);
 }
 
 void voice_update (voice_t *voice) {
 
     delay_period_set (&voice->delay, voice->frequency, voice->rate);
     filter_cutoff_set (&voice->filter_dc_blocker, CUTOFF_DC_BLOCKER, voice->rate);
-    filter_cutoff_set (&voice->filter_bridge_loop, CUTOFF_BRIDGE, voice->rate);
-    filter_cutoff_set (&voice->filter_bridge_input, CUTOFF_BRIDGE, voice->rate);
     filter_cutoff_set (&voice->filter_damper, CUTOFF_DAMPER, voice->rate);
     filter_cutoff_set (&voice->filter_finger, CUTOFF_FINGER, voice->rate);
     filter_cutoff_set (&voice->filter_transition_damper, COEFFICIENT_TRANSITION_DAMPER, voice->rate);
     filter_cutoff_set (&voice->filter_transition_finger, voice->coefficient_transition_finger, voice->rate);
+    bridge_cutoff_set (&voice->bridge, CUTOFF_BRIDGE, voice->rate);
 }
 
 void voice_rate_set (voice_t *voice, double rate) {
@@ -295,10 +320,7 @@ void voice_process (voice_t *voice, double input) {
     double finger_undamped;
     double reflection_finger;
     double termination;
-    double transmission_termination;
-    double reflection_termination;
     double reflection_bridge;
-    double transmission_input;
 
     /* transitions */
     target_coefficient_finger = voice->sustain * voice->target_coefficient_finger;
@@ -324,15 +346,9 @@ void voice_process (voice_t *voice, double input) {
     termination = reflection_finger + finger_undamped;
 
     /* termination */
-    transmission_termination = TRANSMISSION_BRIDGE * termination;
-    reflection_termination = termination - transmission_termination;
-    reflection_bridge = filter_process (&voice->filter_bridge_loop, reflection_termination);
-    voice->output = transmission_termination
-                  + reflection_termination
-                  - reflection_bridge;
-    transmission_input = filter_process (&voice->filter_bridge_input,
-                                         (1 - TRANSMISSION_BRIDGE) * input);
-    delay_process (&voice->delay, transmission_input + reflection_bridge);
+    reflection_bridge = bridge_process (&voice->bridge, termination);
+    voice->output = termination - reflection_bridge;
+    delay_process (&voice->delay, input + reflection_bridge);
 }
 
 static void voice_excite (voice_t *voice, double velocity) {
@@ -418,6 +434,7 @@ double resonator_process (resonator_t *resonator, double input) {
 typedef struct synth_t {
 
     voice_t voices[N_VOICES];
+    bridge_t bridge;
     resonator_t resonator;
 
     double bend;
@@ -436,6 +453,7 @@ void synth_init (synth_t *synth) {
     for (i = 0; i < N_VOICES; i++)
         voice_init (&synth->voices[i], i);
 
+    bridge_init (&synth->bridge, BRIDGE_COEFFICIENT_BYPASS);
     resonator_init (&synth->resonator);
 }
 
@@ -446,6 +464,7 @@ void synth_terminate (synth_t *synth) {
     for (i = 0; i < N_VOICES; i++)
         voice_terminate (&synth->voices[i]);
 
+    bridge_terminate (&synth->bridge);
     resonator_terminate (&synth->resonator);
 }
 
@@ -455,6 +474,8 @@ static void synth_update (synth_t *synth) {
 
     for (i = 0; i < N_VOICES; i++)
         voice_rate_set (&synth->voices[i], synth->rate);
+
+    bridge_cutoff_set (&synth->bridge, CUTOFF_BRIDGE, synth->rate);
 }
 
 void synth_process_audio (synth_t *synth,
@@ -473,21 +494,20 @@ void synth_process_audio (synth_t *synth,
 
         double output_resonator;
         double reflection;
-        double transmission;
         double distributed;
 
         double output_sum_voices = 0;
         for (j = VOICE_MIN; j < VOICE_MAX; j++)
             output_sum_voices += synth->voices[j].output;
 
-        reflection = SYMPATHETIC_RESONANCE * output_sum_voices;
-        transmission = output_sum_voices - reflection;
+        reflection = bridge_process (&synth->bridge,
+                                     SYMPATHETIC_RESONANCE * output_sum_voices);
         distributed = reflection / N_VOICES;
 
         for (j = VOICE_MIN; j < VOICE_MAX; j++)
             voice_process (&synth->voices[j], distributed);
 
-        output_resonator = resonator_process (&synth->resonator, transmission);
+        output_resonator = resonator_process (&synth->resonator, output_sum_voices);
         buffer[i] = VOLUME * output_resonator;
     }
 }
