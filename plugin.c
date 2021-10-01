@@ -16,15 +16,15 @@
 #define N_VOICES 127
 #define VOICE_MIN 0x24
 #define VOICE_MAX 0x61
-#define SYMPATHETIC_RESONANCE 0.0
+#define SYMPATHETIC_RESONANCE 1
 #define BEND_RANGE 2 /* semitones */
 #define N_DELAY_SAMPLES 8000
-#define CUTOFF_BODY 8000
+#define CUTOFF_BRIDGE 8000
 #define CUTOFF_DAMPER 500
 #define CUTOFF_DAMPER_SMOOTHING 200
 #define CUTOFF_DC_BLOCKER 20
 #define HAMMER_STRIKE_POSITION 0.25
-#define VOLUME 1
+#define VOLUME 0.05
 
 static double lerp (double x, double a, double b) {
 
@@ -196,7 +196,8 @@ typedef struct voice_t {
 
     delay_t delay;
     filter_t filter_dc_blocker;
-    filter_t filter_body;
+    filter_t filter_bridge_loop;
+    filter_t filter_bridge_input;
     filter_t filter_damper;
     filter_t filter_transition;
     double frequency;
@@ -214,7 +215,8 @@ void voice_init (voice_t *voice, int note) {
     voice->frequency = 440 * pow (2, (note - 69) / 12.0);
     delay_init (&voice->delay, N_DELAY_SAMPLES);
     filter_init (&voice->filter_dc_blocker);
-    filter_init (&voice->filter_body);
+    filter_init (&voice->filter_bridge_loop);
+    filter_init (&voice->filter_bridge_input);
     filter_init (&voice->filter_damper);
     filter_init (&voice->filter_transition);
     voice->damper = 1;
@@ -225,7 +227,8 @@ void voice_terminate (voice_t *voice) {
 
     delay_terminate (&voice->delay);
     filter_terminate (&voice->filter_dc_blocker);
-    filter_terminate (&voice->filter_body);
+    filter_terminate (&voice->filter_bridge_loop);
+    filter_terminate (&voice->filter_bridge_input);
     filter_terminate (&voice->filter_damper);
     filter_terminate (&voice->filter_transition);
 }
@@ -234,7 +237,8 @@ void voice_update (voice_t *voice) {
 
     delay_period_set (&voice->delay, voice->frequency, voice->rate);
     filter_cutoff_set (&voice->filter_dc_blocker, CUTOFF_DC_BLOCKER, voice->rate);
-    filter_cutoff_set (&voice->filter_body, CUTOFF_BODY, voice->rate);
+    filter_cutoff_set (&voice->filter_bridge_loop, CUTOFF_BRIDGE, voice->rate);
+    filter_cutoff_set (&voice->filter_bridge_input, CUTOFF_BRIDGE, voice->rate);
     filter_cutoff_set (&voice->filter_damper, CUTOFF_DAMPER, voice->rate);
     filter_cutoff_set (&voice->filter_transition, CUTOFF_DAMPER_SMOOTHING, voice->rate);
 }
@@ -247,7 +251,7 @@ void voice_rate_set (voice_t *voice, double rate) {
 
 void voice_process (voice_t *voice, double input) {
 
-    double delay, dc_blocker, feedback, termination, damper, damped, undamped, damping_target, damping;
+    double damping_target, damping, delay, dc_blocker, damped, undamped, reflection_damper, reflection_bridge, transmission_input;
 
     damping_target = voice->damped ? voice->damper : 0;
     damping = filter_process (&voice->filter_transition, damping_target);
@@ -256,11 +260,11 @@ void voice_process (voice_t *voice, double input) {
     dc_blocker = filter_process_high_pass (&voice->filter_dc_blocker, delay);
     damped = damping * dc_blocker;
     undamped = dc_blocker - damped;
-    damper = filter_process (&voice->filter_damper, damped);
-    termination = damper + undamped;
-    feedback = filter_process (&voice->filter_body, termination);
-    voice->output = termination - feedback;
-    delay_process (&voice->delay, feedback + input);
+    reflection_damper = filter_process (&voice->filter_damper, damped);
+    reflection_bridge = filter_process (&voice->filter_bridge_loop, undamped + reflection_damper);
+    voice->output = reflection_damper - reflection_bridge;
+    transmission_input = filter_process (&voice->filter_bridge_input, input);
+    delay_process (&voice->delay, transmission_input + reflection_bridge);
 }
 
 static void voice_excite (voice_t *voice, double velocity) {
@@ -382,22 +386,18 @@ void synth_process_audio (synth_t *synth,
 
         double output_resonator;
         double sympathetic_resonance;
-        double sympathetic_resonance_distribution;
-        double output;
 
         double output_sum_voices = 0;
         for (j = VOICE_MIN; j < VOICE_MAX; j++)
             output_sum_voices += synth->voices[j].output;
 
         output_resonator = resonator_process (&synth->resonator, output_sum_voices);
-        sympathetic_resonance = SYMPATHETIC_RESONANCE * output_resonator;
-        sympathetic_resonance_distribution = sympathetic_resonance / N_VOICES;
-        output = output_resonator - sympathetic_resonance;
+        sympathetic_resonance = SYMPATHETIC_RESONANCE * output_sum_voices / N_VOICES;
 
         for (j = VOICE_MIN; j < VOICE_MAX; j++)
             voice_process (&synth->voices[j], sympathetic_resonance);
 
-        buffer[i] = VOLUME * output;
+        buffer[i] = VOLUME * output_resonator;
     }
 }
 
