@@ -16,12 +16,13 @@
 #define N_VOICES 127
 #define VOICE_MIN 0x24
 #define VOICE_MAX 0x61
-#define SYMPATHETIC_RESONANCE 0
+#define SYMPATHETIC_RESONANCE 0.0
 #define BEND_RANGE 2 /* semitones */
 #define N_DELAY_SAMPLES 8000
-#define CUTOFF_LOOP_UNDAMPED 8000
-#define CUTOFF_LOOP_DAMPED 500
-#define CUTOFF_DAMPER 200
+#define CUTOFF_BODY 8000
+#define CUTOFF_DAMPER 500
+#define CUTOFF_DAMPER_SMOOTHING 200
+#define CUTOFF_DC_BLOCKER 20
 #define HAMMER_STRIKE_POSITION 0.25
 #define VOLUME 1
 
@@ -158,8 +159,6 @@ typedef struct convolver_t {
 
 void convolver_init (convolver_t *convolver, char *path_impulse_response) {
 
-    size_t i;
-
     memset (convolver, 0, sizeof (convolver_t));
     buffer_load (&convolver->impulse_response, path_impulse_response);
     delay_init (&convolver->memory, convolver->impulse_response.n_samples);
@@ -196,11 +195,13 @@ double convolver_process (convolver_t *convolver, double input) {
 typedef struct voice_t {
 
     delay_t delay;
-    filter_t filter_loop;
+    filter_t filter_dc_blocker;
+    filter_t filter_body;
     filter_t filter_damper;
+    filter_t filter_transition;
     double frequency;
     double output;
-    double cutoff_damper;
+    double damper;
     bool damped;
 
     double rate;
@@ -212,23 +213,30 @@ void voice_init (voice_t *voice, int note) {
     memset (voice, 0, sizeof (voice_t));
     voice->frequency = 440 * pow (2, (note - 69) / 12.0);
     delay_init (&voice->delay, N_DELAY_SAMPLES);
-    filter_init (&voice->filter_loop);
+    filter_init (&voice->filter_dc_blocker);
+    filter_init (&voice->filter_body);
     filter_init (&voice->filter_damper);
-    voice->cutoff_damper = CUTOFF_LOOP_DAMPED;
+    filter_init (&voice->filter_transition);
+    voice->damper = 1;
     voice->damped = true;
 }
 
 void voice_terminate (voice_t *voice) {
 
     delay_terminate (&voice->delay);
-    filter_terminate (&voice->filter_loop);
+    filter_terminate (&voice->filter_dc_blocker);
+    filter_terminate (&voice->filter_body);
     filter_terminate (&voice->filter_damper);
+    filter_terminate (&voice->filter_transition);
 }
 
 void voice_update (voice_t *voice) {
 
     delay_period_set (&voice->delay, voice->frequency, voice->rate);
+    filter_cutoff_set (&voice->filter_dc_blocker, CUTOFF_DC_BLOCKER, voice->rate);
+    filter_cutoff_set (&voice->filter_body, CUTOFF_BODY, voice->rate);
     filter_cutoff_set (&voice->filter_damper, CUTOFF_DAMPER, voice->rate);
+    filter_cutoff_set (&voice->filter_transition, CUTOFF_DAMPER_SMOOTHING, voice->rate);
 }
 
 void voice_rate_set (voice_t *voice, double rate) {
@@ -239,16 +247,20 @@ void voice_rate_set (voice_t *voice, double rate) {
 
 void voice_process (voice_t *voice, double input) {
 
-    double delay, feedback, cutoff_loop, cutoff_loop_target;
+    double delay, dc_blocker, feedback, termination, damper, damped, undamped, damping_target, damping;
 
-    cutoff_loop_target = voice->damped ? voice->cutoff_damper : CUTOFF_LOOP_UNDAMPED;
-    cutoff_loop = filter_process (&voice->filter_damper, cutoff_loop_target);
-    filter_cutoff_set (&voice->filter_loop, cutoff_loop, voice->rate);
+    damping_target = voice->damped ? voice->damper : 0;
+    damping = filter_process (&voice->filter_transition, damping_target);
 
     delay = *voice->delay.buffer_pointer;
-    feedback = filter_process (&voice->filter_loop, delay);
-    voice->output = delay - feedback;
-    delay_process (&voice->delay, input + feedback);
+    dc_blocker = filter_process_high_pass (&voice->filter_dc_blocker, delay);
+    damped = damping * dc_blocker;
+    undamped = dc_blocker - damped;
+    damper = filter_process (&voice->filter_damper, damped);
+    termination = damper + undamped;
+    feedback = filter_process (&voice->filter_body, termination);
+    voice->output = termination - feedback;
+    delay_process (&voice->delay, feedback + input);
 }
 
 static void voice_excite (voice_t *voice, double velocity) {
@@ -287,7 +299,7 @@ void voice_note_off (voice_t *voice, double velocity) {
 
 void voice_damper_set (voice_t *voice, double damper) {
 
-    voice->cutoff_damper = lerp (damper, CUTOFF_LOOP_UNDAMPED, CUTOFF_LOOP_DAMPED);
+    voice->damper = damper;
 }
 
 typedef struct resonator_t {
@@ -377,7 +389,7 @@ void synth_process_audio (synth_t *synth,
         for (j = VOICE_MIN; j < VOICE_MAX; j++)
             output_sum_voices += synth->voices[j].output;
 
-        output_resonator = output_sum_voices;/*resonator_process (&synth->resonator, output_sum_voices);*/
+        output_resonator = resonator_process (&synth->resonator, output_sum_voices);
         sympathetic_resonance = SYMPATHETIC_RESONANCE * output_resonator;
         sympathetic_resonance_distribution = sympathetic_resonance / N_VOICES;
         output = output_resonator - sympathetic_resonance;
